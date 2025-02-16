@@ -7,6 +7,19 @@ import (
 	"strings"
 )
 
+// LineHistory tracks the parsing history for a single line
+type LineHistory struct {
+	Line         string
+	StateName    string
+	Matches      []MatchPair
+	MatchIndices []IndexPair
+}
+
+type MatchPair struct {
+	MatchMap map[string]string // The matched groups
+	Rule     TextFSMRule
+}
+
 type TextFSM struct {
 	COMMENT_RE         *regexp.Regexp
 	STATE_RE           *regexp.Regexp
@@ -14,10 +27,27 @@ type TextFSM struct {
 	Values             map[string]TextFSMValue
 	States             map[string]TextFSMState
 	line_num           int
+	visualDebug        bool
+	parseHistory       []LineHistory
+}
+
+func (t *TextFSM) EnableVisualDebug() {
+	t.visualDebug = true
+	t.parseHistory = make([]LineHistory, 0)
+}
+
+func (t *TextFSM) GenerateDebugHTML(cliText string) (string, error) {
+	if !t.visualDebug {
+		return "", fmt.Errorf("visual debug mode not enabled")
+	}
+
+	debugger := NewVisualDebugger(t, cliText)
+	return debugger.GenerateHTML()
 }
 
 // Parses the string passed, into a TextFSM structure.
-// 	Args:
+//
+//	Args:
 //		input string: Valid template as a string.
 //	Retruns:
 //		error if there is any error. nil otherwise
@@ -56,12 +86,13 @@ func (t *TextFSM) ParseScanner(scanner *bufio.Scanner) error {
 }
 
 // Extracts Variables from start of template file.
-//     Values are expected as a contiguous block at the head of the file.
-//     These will be line separated from the State definitions that follow.
-//     Args:
-//       scanner: Scanner to read through lines
-//	   Returns:
-//       returns error if there is any error while parsing. nil otherwise.
+//
+//	    Values are expected as a contiguous block at the head of the file.
+//	    These will be line separated from the State definitions that follow.
+//	    Args:
+//	      scanner: Scanner to read through lines
+//		   Returns:
+//	      returns error if there is any error while parsing. nil otherwise.
 func (t *TextFSM) parseFSMVariables(scanner *bufio.Scanner) error {
 	t.Values = make(map[string]TextFSMValue)
 	t.line_num = 0
@@ -109,10 +140,13 @@ func (t *TextFSM) parseFSMVariables(scanner *bufio.Scanner) error {
 // The routine checks that the state names are a well formed string, do
 // not clash with reserved names and are unique.
 // Args:
-//   scanner: Scanner to read lines from
+//
+//	scanner: Scanner to read lines from
+//
 // Returns:
-//		done bool: true if there are no lines left in the file. false if there are lines left to parse
-//      Error if there is any error. nil otherwise
+//
+//			done bool: true if there are no lines left in the file. false if there are lines left to parse
+//	     Error if there is any error. nil otherwise
 func (t *TextFSM) parseFSMStates(scanner *bufio.Scanner) (done bool, err error) {
 	for {
 		t.line_num++
@@ -205,7 +239,8 @@ func (t *TextFSMState) parseFSMRules(scanner *bufio.Scanner) (done bool, err err
 // There must be a 'Start' state and if 'EOF' or 'End' states are specified,
 // they must be empty.
 // Returns:
-//   error if the FSM is invalid
+//
+//	error if the FSM is invalid
 func (t *TextFSM) validateFSM() error {
 	// Must have 'Start' state.
 	if _, exists := t.States["Start"]; !exists {

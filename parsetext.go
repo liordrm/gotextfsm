@@ -15,6 +15,7 @@ type ParserOutput struct {
 	Dict           []map[string]interface{}
 	line_num       int
 	cur_state_name string
+	VisualDebugger *VisualDebugger // New field for visual debugging
 }
 
 func (t *ParserOutput) Reset(fsm TextFSM) {
@@ -24,22 +25,23 @@ func (t *ParserOutput) Reset(fsm TextFSM) {
 }
 
 // ParseTextString passes CLI output (provided as string) through FSM and
-//     Args:
-//       text: (string), Text to parse with embedded newlines.
-//		 fsm: (TextFSM), TextFSM object as a result of parsing the text fsm template
-//       eof: (bool), Set to False if we are parsing only part of the file.
-//             Suppresses triggering EOF state.
-//     Returns:
-//       error if there is any error in parsing
-func (t *ParserOutput) ParseTextString(text string, fsm TextFSM, eof bool) error {
+//
+//	    Args:
+//	      text: (string), Text to parse with embedded newlines.
+//			 fsm: (TextFSM), TextFSM object as a result of parsing the text fsm template
+//	      eof: (bool), Set to False if we are parsing only part of the file.
+//	            Suppresses triggering EOF state.
+//	    Returns:
+//	      error if there is any error in parsing
+func (t *ParserOutput) ParseTextString(text string, fsm *TextFSM, eof bool) error {
 	return t.ParseTextReader(strings.NewReader(text), fsm, eof)
 }
 
-func (t *ParserOutput) ParseTextReader(reader *strings.Reader, fsm TextFSM, eof bool) error {
+func (t *ParserOutput) ParseTextReader(reader *strings.Reader, fsm *TextFSM, eof bool) error {
 	return t.ParseTextScanner(bufio.NewScanner(reader), fsm, eof)
 }
 
-func (t *ParserOutput) ParseTextScanner(scanner *bufio.Scanner, fsm TextFSM, eof bool) error {
+func (t *ParserOutput) ParseTextScanner(scanner *bufio.Scanner, fsm *TextFSM, eof bool) error {
 	t.line_num = 0
 	if t.cur_state_name == "" {
 		t.cur_state_name = "Start"
@@ -69,35 +71,94 @@ func (t *ParserOutput) ParseTextScanner(scanner *bufio.Scanner, fsm TextFSM, eof
 	if t.cur_state_name != "End" && (!eof_exists) && eof {
 		// Implicit EOF performs Next.Record operation.
 		// Suppressed if Null EOF state is instantiated.
-		t.appendRecord(fsm)
+		t.appendRecord(*fsm)
 	}
 	return nil
 }
 
 // checkLine passes the line through each rule until a match is made.
 // If the value regex contains nested match groups in the form (?P<name>regex),
-//     In case of List type with nested match groups
-//        instead of adding a string to the list, we add a dictionary of the groups.
-//     Other value types with nested match groups,
-//         the value is set as 'map[string]string' instead of a 'string'
-//     Eg.
-//     Value List ((?P<name>\w+)\s+(?P<age>\d+)) would create results like:
-//         [{'name': 'Bob', 'age': 32}]
-//     Do not give nested groups the same name as other values in the template.
-//     Nested regexps more than 2 levels are not supported currently
-//     Args:
-//       line: A string, the current input line.
-//		 fsm: TextFSM Object
-func (t *ParserOutput) checkLine(line string, fsm TextFSM) error {
+//
+//	    In case of List type with nested match groups
+//	       instead of adding a string to the list, we add a dictionary of the groups.
+//	    Other value types with nested match groups,
+//	        the value is set as 'map[string]string' instead of a 'string'
+//	    Eg.
+//	    Value List ((?P<name>\w+)\s+(?P<age>\d+)) would create results like:
+//	        [{'name': 'Bob', 'age': 32}]
+//	    Do not give nested groups the same name as other values in the template.
+//	    Nested regexps more than 2 levels are not supported currently
+//	    Args:
+//	      line: A string, the current input line.
+//			 fsm: TextFSM Object
+func (t *ParserOutput) checkLine(line string, fsm *TextFSM) error {
+	fmt.Println(line)
+	if line == "permit ip 10.29.1.0 0.0.0.255 10.10.22.0 0.0.0.255" {
+		fmt.Println("hey")
+	}
 	// fmt.Printf("Looking at line '%s'\n", line)
 	state, exists := fsm.States[t.cur_state_name]
 	if !exists {
 		// Should never happen for a proper TextFSM
 		panic(fmt.Sprintf("Unknown State %s", t.cur_state_name))
 	}
+
+	// Initialize line history if visual debug is enabled
+	var lineHistory *LineHistory
+	if fsm.visualDebug {
+		lineHistory = &LineHistory{
+			Line:      line,
+			StateName: t.cur_state_name,
+		}
+	}
+
 	for _, rule := range state.rules {
-		varmap := GetNamedMatches(regexp.MustCompile(rule.Regex), line)
+		re := regexp.MustCompile(rule.Regex)
+		varmap := GetNamedMatches(re, line)
 		if varmap != nil {
+			if fsm.visualDebug && lineHistory != nil {
+				fmt.Printf("visual debug mode active, matches: %+v \n", varmap)
+
+				// Create matched pair
+				matchPair := MatchPair{
+					MatchMap: varmap,
+					Rule:     rule,
+				}
+				lineHistory.Matches = append(lineHistory.Matches, matchPair)
+
+				// Find and store match indices
+				for subexp, _ := range re.SubexpNames() {
+					if subexp == 0 { // Skip the full match
+						continue
+					}
+
+					indices := re.FindSubmatchIndex([]byte(line))
+					if indices != nil && indices[2*subexp] != -1 {
+						start := indices[2*subexp]
+						end := indices[2*subexp+1]
+
+						// Get the corresponding value name from the rule's regex
+						valueName := ""
+						for key := range varmap {
+							if re.SubexpIndex(key) == subexp {
+								valueName = key
+								break
+							}
+						}
+
+						if valueName != "" {
+							idx := IndexPair{
+								Start: start,
+								End:   end,
+								Value: valueName,
+							}
+							fmt.Printf("adding match index: start=%d, end=%d, value=%s\n", start, end, valueName)
+							lineHistory.MatchIndices = append(lineHistory.MatchIndices, idx)
+						}
+					}
+				}
+			}
+
 			// fmt.Printf("Line '%s'. Regex: '%s' varmap: '%v'\n", line, rule.Regex, varmap)
 			for key, val := range varmap {
 				valobj, exists := fsm.Values[key]
@@ -124,7 +185,7 @@ func (t *ParserOutput) checkLine(line string, fsm TextFSM) error {
 				// Setting it back to fsm.Values works. Need to understand this further
 				fsm.Values[key] = valobj
 			}
-			output, err := t.handleOperations(rule, fsm, line)
+			output, err := t.handleOperations(rule, *fsm, line)
 			if err != nil {
 				return err
 			}
@@ -142,6 +203,11 @@ func (t *ParserOutput) checkLine(line string, fsm TextFSM) error {
 	// 	fmt.Printf(" %s: curval '%v', filldownval '%v', ", name, varobj.curval, varobj.filldown_value)
 	// }
 	// fmt.Printf("\n")
+	// Append line history if in debug mode
+	if fsm.visualDebug && lineHistory != nil {
+		fsm.parseHistory = append(fsm.parseHistory, *lineHistory)
+	}
+
 	return nil
 }
 
@@ -174,24 +240,28 @@ func (t *ParserOutput) appendRecord(fsm TextFSM) {
 // handleOperation handles Operators on the data record.
 //
 // Operators come in two parts and are a '.' separated pair:
-//   Operators that effect the input line or the current state (line_op).
-// 	'Next'      Get next input line and restart parsing (default).
-// 	'Continue'  Keep current input line and continue resume parsing.
-// 	'Error'     Unrecoverable input discard result and raise Error.
+//
+//	  Operators that effect the input line or the current state (line_op).
+//		'Next'      Get next input line and restart parsing (default).
+//		'Continue'  Keep current input line and continue resume parsing.
+//		'Error'     Unrecoverable input discard result and raise Error.
 //
 //
-//   Operators that affect the record being built for output (record_op).
-// 	'NoRecord'  Does nothing (default)
-// 	'Record'    Adds the current record to the result.
-// 	'Clear'     Clears non-Filldown data from the record.
-// 	'Clearall'  Clears all data from the record.
+//	  Operators that affect the record being built for output (record_op).
+//		'NoRecord'  Does nothing (default)
+//		'Record'    Adds the current record to the result.
+//		'Clear'     Clears non-Filldown data from the record.
+//		'Clearall'  Clears all data from the record.
 //
 // Args:
-//   rule: FSMRule object.
-//   line: A string, the current input line.
+//
+//	rule: FSMRule object.
+//	line: A string, the current input line.
+//
 // Returns:
-//   True if state machine should restart state with new line.
-//   error: If Error state is encountered.
+//
+//	True if state machine should restart state with new line.
+//	error: If Error state is encountered.
 func (t *ParserOutput) handleOperations(rule TextFSMRule, fsm TextFSM, line string) (output bool, err error) {
 	if rule.RecordOp == "Record" {
 		t.appendRecord(fsm)

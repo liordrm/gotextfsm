@@ -1,3 +1,3 @@
-module github.com/sirikothe/gotextfsm
+module github.com/dream-security/gotextfsm
 
-go 1.16
+go 1.21.1

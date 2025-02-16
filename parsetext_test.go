@@ -42,13 +42,13 @@ func TestParseText(t *testing.T) {
 		if tc.eof != nil {
 			eof = *tc.eof
 		}
-		err = out.ParseTextString(tc.data, fsm, eof)
+		err = out.ParseTextString(tc.data, &fsm, eof)
 		if tc.reset != nil && *tc.reset {
 			out.Reset(fsm)
-			err = out.ParseTextString(tc.data, fsm, eof)
+			err = out.ParseTextString(tc.data, &fsm, eof)
 		}
 		if tc.data1 != "" {
-			err = out.ParseTextString(tc.data1, fsm, eof)
+			err = out.ParseTextString(tc.data1, &fsm, eof)
 		}
 		if tc.run_err != nil {
 			if err == nil {
